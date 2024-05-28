@@ -2,25 +2,22 @@
 
 """
 This is the implementation to the final project
-
-TODO:
-- performance statistics
 """
 
 
 import time
 import numpy as np
 import matplotlib
-matplotlib.rc( 'image', cmap='jet' )
+from matplotlib.ticker import MaxNLocator
 from matplotlib import pyplot as plt
 from matplotlib import cm
 import itertools
-
 import scipy as sp
 from scipy.sparse import identity, eye, spdiags
 from scipy.sparse.linalg import gmres, spilu, LinearOperator
 
 # for the plotting
+matplotlib.rc( 'image', cmap='jet' )
 markers = itertools.cycle(['o', 's', '^', 'D', '*', 'x', '+', 'p', 'h', 'v'])
 
 # path for figures
@@ -52,6 +49,10 @@ class Problem:
 def A_burger(u,dt_dx):
     n = u.shape[0]
     return spdiags([-dt_dx*u,1+dt_dx*u,-dt_dx*u],[-1,0,n])
+    # def A(x):
+    #     x_shift = np.roll(x, 1)
+    #     return -dt_dx*u*x_shift+(1+dt_dx)*u*x
+    # return LinearOperator((n,n),A)
 
 def initialize(n=2**11):
     # define space
@@ -126,11 +127,6 @@ default_params = {
 }
 
 def evolve_implicit(prb, un, l, plot_steps=None, ax_gmres_res=None, params=default_params):
-    ####################################
-    #
-    # Newton-GMRES
-    #
-    ####################################
     dx = prb.dx
     dt = prb.dt
     n = prb.n
@@ -152,6 +148,7 @@ def evolve_implicit(prb, un, l, plot_steps=None, ax_gmres_res=None, params=defau
     # For the Newton iterations
     Newton_tol = 1e-10
 
+    # The Newton grmes starts here
     while res_k > Newton_tol:
         # Jacobian Ak at current iterate
         Ak = prb.jac_implicit(uk)
@@ -168,7 +165,7 @@ def evolve_implicit(prb, un, l, plot_steps=None, ax_gmres_res=None, params=defau
         elif precond == 'jacobi':
             M = LinearOperator((n,n),lambda x: x/Ak.diagonal())
 
-        A = LinearOperator((n,n), lambda x: M*(Ak.dot(x)))
+        AM = LinearOperator((n,n), lambda x: Ak.dot(M*x))
 
         # update eta_k for Eisenstat and Walker
         etaA_k = gamma*(res_k/res_km1)**2
@@ -199,9 +196,15 @@ def evolve_implicit(prb, un, l, plot_steps=None, ax_gmres_res=None, params=defau
             num_iterations += 1
             global residuals_gmres
             residuals_gmres += [np.linalg.norm(bk+Ak.dot(x))]
+            # print(residuals_gmres[-1])
 
         # Solve linear system using GMRES
-        du,_ = gmres(A, -bk, callback=callback, tol=eta_k, atol=0, callback_type='x')
+        if False:
+            # right preconditioning
+            du,_ = gmres(AM, -M*bk, callback=callback, tol=eta_k, atol=0, callback_type='x')
+        else:
+            # left preconditioning
+            du,_ = gmres(Ak, -bk, M=M, callback=callback, tol=eta_k, atol=0, callback_type='x')
 
         # Update Newton solution and residual
         uk += du
@@ -245,7 +248,7 @@ def compute(params=default_params, prb = None, un = None):
 
     # initialise plots
     fig_gmres_res, ax_gmres_res = plt.subplots()
-    fig_gmres, ax_gmres = plt.subplots()
+    fig_gmres_newton, ax_gmres_newton = plt.subplots()
     fig_newton, ax_newton = plt.subplots()
 
     X = prb.X
@@ -274,8 +277,8 @@ def compute(params=default_params, prb = None, un = None):
             if l in plot_steps:
                 marker = next(markers)
                 residuals = np.array(residuals)
-                ax_newton.scatter(range(nr_newton[-1]),residuals,label=f"Time step {l}", marker=marker)
-                ax_gmres.scatter(range(nr_newton[-1]),gmres_iters,label=f"Time step {l}", marker=marker)
+                ax_newton.scatter(range(nr_newton[-1]),residuals/residuals[0],label=f"Time step {l}", marker=marker)
+                ax_gmres_newton.scatter(range(nr_newton[-1]),gmres_iters,label=f"Time step {l}", marker=marker)
         else:
             un = evolve_explicit(prb, un)
         un_list += [un.copy()]
@@ -289,16 +292,19 @@ def compute(params=default_params, prb = None, un = None):
 
     # beautify performance plots
     ax_newton.set_xlabel ('Newton step')
-    ax_newton.set_ylabel ('Residual')
+    ax_newton.set_ylabel ('Relative residuals $|r_j|/|r_0|$')
     ax_newton.set_yscale('log')
+    ax_newton.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax_newton.legend()
-    ax_gmres.set_xlabel ('Newton step')
-    ax_gmres.set_ylabel ('Number of GMRES iterations')
-    ax_gmres.set_ylim(bottom=0)
-    ax_gmres.legend()
+    ax_gmres_newton.set_xlabel ('Newton step')
+    ax_gmres_newton.set_ylabel ('Number of GMRES iterations')
+    ax_gmres_newton.set_ylim(bottom=0)
+    ax_gmres_res.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax_gmres_newton.legend()
     ax_gmres_res.set_xlabel ('GMRES step')
     ax_gmres_res.set_ylabel ('Relative residuals $|r_j|/|r_0|$')
     ax_gmres_res.set_yscale('log')
+    ax_gmres_res.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax_gmres_res.legend()
 
     # plot final solution
@@ -320,7 +326,7 @@ def compute(params=default_params, prb = None, un = None):
     
     if params['name']:
         # save statistics plots
-        for fig, name in [[fig_gmres_res,'gmres_res'],[fig_gmres, 'gmres_nr'],[fig_newton, 'newton_res'],[fig_nr_newton, 'newton_nr'],[fig_nr_gmres, 'newton_nr']]:
+        for fig, name in [[fig_gmres_res,'gmres_res'],[fig_gmres_newton, 'gmres_newton_nr'],[fig_newton, 'newton_res'],[fig_nr_newton, 'newton_nr'],[fig_nr_gmres, 'gmres_nr']]:
             fig.savefig(f"{figpath}/{name}_{params['name']}.pdf")
 
     if params['showfig']:
@@ -373,9 +379,10 @@ if __name__ == '__main__':
                     'precond': precond,
                     'eisenwalker': eisenwalker,
                     'name': name,
-                    'showfig': True,
+                    'showfig': False,
                     'implicit': True
                 }
+                print(params)
                 nr_newton, nr_gmres = compute(params)
 
 
@@ -408,7 +415,7 @@ if __name__ == '__main__':
             if True:
                 plt.show()
             if True:
-                fig.savefig(f'{figpath}/mesh_independent_{name}')
+                fig.savefig(f'{figpath}/mesh_independent_{name}.pdf')
 
 
 
